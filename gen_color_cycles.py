@@ -146,17 +146,24 @@ print(f"Color list generated in {time.time() - t}s")
 # Generate color set
 #
 
-# To generate a color set, a starting color is chosen at random. Then, each
-# possible color is checked to see if it is far enough away in both lightness
-# and perceptual distance, both for normal color vision and for those with
-# color vision deficiency. Of these remaining colors, one is chosen at random.
-# The process is then repeated until the color set contains the desired number
-# of colors. This method has an advantage over rejection sampling, since it is
-# guaranteed to return. Checking a coarse CVD interval during set generation
-# was tried but removed, since the performance penalty outweighs the gains from
-# having to try again fewer times.
+# To generate a color set, a starting color is chosen at random in the
+# CAM02-UCS space via rejection sampling. Then, each possible color is checked
+# to see if it is far enough away in both lightness and perceptual distance,
+# both for normal color vision and for those with color vision deficiency. Of
+# these remaining colors, one is chosen at random by using rejection sampling
+# starting in the CAM02-UCS space. The process is then repeated until the color
+# set contains the desired number of colors. This method of first
+# precalculating all remaining valid colors has an advantage over plain
+# rejection sampling, since it is guaranteed to return. Checking a coarse CVD
+# interval during set generation was tried but removed, since the performance
+# penalty outweighs the gains from having to try again fewer times.
 
 COMBINATIONS = tuple(itertools.combinations(range(NUM_COLORS), 2))
+
+MIN_A = np.min(JAB_COLORS[..., 1]) - 0.1
+MAX_A = np.max(JAB_COLORS[..., 1]) + 0.1
+MIN_B = np.min(JAB_COLORS[..., 2]) - 0.1
+MAX_B = np.max(JAB_COLORS[..., 2]) + 0.1
 
 
 @numba.njit
@@ -170,7 +177,35 @@ def gen_color_set(seed):
     prot_jab_colors = jab_colors.copy()
     trit_jab_colors = jab_colors.copy()
     rgb_colors = np.empty((NUM_COLORS, 3), dtype=np.uint8)
-    first_color_idx = np.random.randint(0, RGB_COLORS.shape[0])
+
+    # Pick first color
+    first_color_idx = -1
+    while True:
+        jab = np.array(
+            (
+                (MAX_J - MIN_J) * np.random.random_sample() + MIN_J,
+                (MAX_A - MIN_A) * np.random.random_sample() + MIN_A,
+                (MAX_B - MIN_B) * np.random.random_sample() + MIN_B,
+            )
+        )
+        cp = (
+            color_conversions.sRGB1_linear_to_sRGB1(
+                color_conversions.jab_to_rgb_linear(jab)
+            )
+            * 255
+        ).astype(np.uint8)
+        where = np.where(
+            np.logical_and(
+                RGB_COLORS[..., 0] == cp[0],
+                np.logical_and(
+                    RGB_COLORS[..., 1] == cp[1], RGB_COLORS[..., 2] == cp[2]
+                ),
+            )
+        )[0]
+        if where.size > 0:
+            first_color_idx = where[0]
+            break
+
     rgb_colors[0] = RGB_COLORS[first_color_idx]
     jab_colors[0] = JAB_COLORS[first_color_idx]
     deut_jab_colors[0] = DEUT_JAB_COLORS[first_color_idx]
@@ -178,6 +213,7 @@ def gen_color_set(seed):
     trit_jab_colors[0] = TRIT_JAB_COLORS[first_color_idx]
     valid_colors = np.empty(RGB_COLORS.shape[0], dtype=np.uint32)
     for i in range(1, NUM_COLORS):
+        # Find remaining valid colors
         c = 0
         for j in range(RGB_COLORS.shape[0]):
             for k in range(i):
@@ -198,7 +234,36 @@ def gen_color_set(seed):
                 c += 1
         if c == 0:
             return None
-        pick = np.random.randint(0, c)
+
+        # Pick next color
+        valid_colors2 = valid_colors[:c]
+        pick = -1
+        while pick < 0:
+            jab = np.array(
+                (
+                    (MAX_J - MIN_J) * np.random.random_sample() + MIN_J,
+                    (MAX_A - MIN_A) * np.random.random_sample() + MIN_A,
+                    (MAX_B - MIN_B) * np.random.random_sample() + MIN_B,
+                )
+            )
+            cp = (
+                color_conversions.sRGB1_linear_to_sRGB1(
+                    color_conversions.jab_to_rgb_linear(jab)
+                )
+                * 255
+            ).astype(np.uint8)
+            where = np.where(
+                np.logical_and(
+                    RGB_COLORS[valid_colors2][..., 0] == cp[0],
+                    np.logical_and(
+                        RGB_COLORS[valid_colors2][..., 1] == cp[1],
+                        RGB_COLORS[valid_colors2][..., 2] == cp[2],
+                    ),
+                )
+            )[0]
+            if where.size > 0:
+                pick = where[0]
+
         rgb_colors[i] = RGB_COLORS[valid_colors[pick]]
         jab_colors[i] = JAB_COLORS[valid_colors[pick]]
         deut_jab_colors[i] = DEUT_JAB_COLORS[valid_colors[pick]]
